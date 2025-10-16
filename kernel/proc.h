@@ -104,4 +104,8 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+  uint64 text_start;          // Start of text segment
+  uint64 text_end;
+  uint64 data_start;          // Start of data segment
+  uint64 data_end;  
 };

@@ -68,11 +68,18 @@ kexec(char *path, char **argv)
     if(ph.vaddr % PGSIZE != 0)
       goto bad;
     uint64 sz1;
-    if((sz1 = uvmalloc(pagetable, sz, ph.vaddr + ph.memsz, flags2perm(ph.flags))) == 0)
-      goto bad;
-    sz = sz1;
-    if(loadseg(pagetable, ph.vaddr, ip, ph.off, ph.filesz) < 0)
-      goto bad;
+    // Record range but do NOT allocate or load pages now.
+p->text_start = ph.vaddr;
+p->text_end   = ph.vaddr + ph.filesz;
+p->data_start = ph.vaddr + ph.filesz;
+p->data_end   = ph.vaddr + ph.memsz;
+printf("[pid %d] INIT-LAZYMAP text=[0x%ld,0x%ld), data=[0x%ld,0x%ld)\n",
+  p->pid, p->text_start, p->text_end, p->data_start, p->data_end);
+
+// Just ensure the virtual range is valid for page faults later
+if((sz1 = ph.vaddr + ph.memsz) > sz)
+  sz = sz1;
+
   }
   iunlockput(ip);
   end_op();
@@ -151,23 +158,29 @@ kexec(char *path, char **argv)
 // va must be page-aligned
 // and the pages from va to va+sz must already be mapped.
 // Returns 0 on success, -1 on failure.
-static int
-loadseg(pagetable_t pagetable, uint64 va, struct inode *ip, uint offset, uint sz)
-{
-  uint i, n;
-  uint64 pa;
+void loaddatafromelf(struct proc *p, uint64 va, uint64 pa) {
+  // compute file offset for the faulting VA
+  struct elfhdr elf;
+  struct proghdr ph;
+  struct inode *ip;
 
-  for(i = 0; i < sz; i += PGSIZE){
-    pa = walkaddr(pagetable, va + i);
-    if(pa == 0)
-      panic("loadseg: address should exist");
-    if(sz - i < PGSIZE)
-      n = sz - i;
-    else
-      n = PGSIZE;
-    if(readi(ip, 0, (uint64)pa, offset+i, n) != n)
-      return -1;
+  begin_op();
+  ip = namei(p->name);
+  if(!ip) { end_op(); return; }
+  ilock(ip);
+  readi(ip, 0, (uint64)&elf, 0, sizeof(elf));
+
+  for(int i=0, off=elf.phoff; i<elf.phnum; i++, off+=sizeof(ph)) {
+    readi(ip, 0, (uint64)&ph, off, sizeof(ph));
+    if(ph.type != ELF_PROG_LOAD) continue;
+    if(va >= ph.vaddr && va < ph.vaddr + ph.filesz) {
+      uint offset = ph.off + (va - ph.vaddr);
+      readi(ip, 0, pa, offset, PGSIZE);
+      break;
+    }
   }
-  
-  return 0;
+
+  iunlockput(ip);
+  end_op();
 }
+
